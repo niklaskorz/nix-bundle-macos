@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env zsh
 
 set -e
 
@@ -13,13 +13,13 @@ if [ -z "$1" ]; then
 	exit;
 fi
 
-if [ "$1" == "--help" ]; then
+if [ "$1" = "--help" ]; then
 	echo "Usage:"
 	echo "nix-bundle-macos PROGRAM_NAME"
 	exit;
 fi
 
-PROGRAM_NAME="$1"
+FLAKE="$1"
 
 NIX_STORE_SOURCE="/nix/store"
 if [ ! -d "$NIX_STORE_SOURCE" ]; then
@@ -27,7 +27,8 @@ if [ ! -d "$NIX_STORE_SOURCE" ]; then
 	exit;
 fi
 
-OUT_PATH=$(nix-env -q "$PROGRAM_NAME" --out-path --no-name)
+OUT_PATH=$(nix build -j auto --no-link --print-out-paths "$FLAKE")
+PROGRAM_NAME=$(nix derivation show "$FLAKE" | jq -r '.[].name')
 
 if [ ! -d "$OUT_PATH" ]; then
 	echo "Missing directory for $PROGRAM_NAME"
@@ -47,10 +48,10 @@ if  [ -d "$OUT_PATH/Applications" ]; then
 	fi
 	APP_NAME=$(ls -1 "$OUT_PATH/Applications/" | head -n 1)
 	SOURCE_DIR="$OUT_PATH/Applications/$APP_NAME"
-	TARGET_DIR="/Applications/$APP_NAME"
+	TARGET_DIR="$PWD/result/$APP_NAME"
 elif [ -d "$OUT_PATH/bin" ]; then
 	SOURCE_DIR="$OUT_PATH/bin"
-	TARGET_DIR="/usr/local/$PROGRAM_NAME"
+	TARGET_DIR="$PWD/result/$PROGRAM_NAME"
 else
 	echo "No Application or bin directory found for $PROGRAM_NAME!"
 	exit
@@ -58,40 +59,55 @@ fi
 
 if [ -d "$TARGET_DIR" ]; then
 	while true; do
-		read -rp "Remove old $TARGET_DIR directory? y/n " yn
+		read -r "yn?Remove old $TARGET_DIR directory? y/n "
 		case $yn in
-			[Yy]* ) sudo rm -rf "$TARGET_DIR"; break;;
+			[Yy]* ) rm -rf "$TARGET_DIR"; break;;
 			[Nn]* ) exit;;
 			* ) echo "Please answer yes or no.";;
 		esac
 	done
 fi
 
-sudo cp -r "$SOURCE_DIR" "$TARGET_DIR"
+mkdir -p result
 
-NIX_STORE_TARGET="$TARGET_DIR/.ns"
+echo "Copying program..."
+cp -R "$SOURCE_DIR" "$TARGET_DIR"
+chmod -R +w "$TARGET_DIR"
 
-sudo mkdir -p "$NIX_STORE_TARGET"
+if [ ! -z "$APP_NAME" ]; then
+	NIX_STORE_TARGET="$TARGET_DIR/Contents/nix"
+	NIX_STORE_DYLD="@executable_path/../nix"
+else
+	NIX_STORE_TARGET="$TARGET_DIR/nix"
+	NIX_STORE_DYLD="@executable_path/nix"
+fi
+
+mkdir -p "$NIX_STORE_TARGET"
 
 deps=$(nix-store -qR "$OUT_PATH")
 
-for dep_path_old in $deps; do
+echo "Copying dependencies..."
+for dep_path_old in $(echo "$deps"); do
         dep_path_new=$(echo "$dep_path_old" | sed "s#${NIX_STORE_SOURCE}/[0-9a-z]\{32\}\-#${NIX_STORE_TARGET}/#")
-        sudo cp -r "$dep_path_old" "$dep_path_new"
+        cp -R "$dep_path_old" "$dep_path_new"
+        chmod -R +w "$dep_path_new"
 done
 
-for dep_path_old in $deps; do
-        dep_path_new=$(echo "$dep_path_old" | sed "s#${NIX_STORE_SOURCE}/[0-9a-z]\{32\}\-#${NIX_STORE_TARGET}/#")
+find "${NIX_STORE_TARGET}" -mindepth 2 -maxdepth 2 -type d -not -name 'Library' -not -name 'lib' -exec rm -rf "{}" \;
+
+echo "Updating paths to nix store..."
+for dep_path_old in $(echo "$deps"); do
+        dep_path_new=$(echo "$dep_path_old" | sed "s#${NIX_STORE_SOURCE}/[0-9a-z]\{32\}\-#${NIX_STORE_DYLD}/#")
         export dep_path_old
         export dep_path_new
 
         # Replace content in text files
         grep -rIl "$NIX_STORE_SOURCE" "$TARGET_DIR" \
-                | xargs -n 1 -P 4 sh -c 'sudo sed -i "" -e "s#${dep_path_old}#${dep_path_new}#g" "$1"' sh
+                | xargs -n 1 -P 4 sh -c 'sed -i "" -e "s#${dep_path_old}#${dep_path_new}#g" "$1"' sh
 
         # Replace content in binary files
         grep -rl "$NIX_STORE_SOURCE" "$TARGET_DIR" \
-                | xargs -n 1 -P 4 sh -c 'sudo ./patch_strings_in_file "$1" "$dep_path_old" "$dep_path_new"' sh
+                | xargs -n 1 -P 4 sh -c './patch_strings_in_file "$1" "$dep_path_old" "$dep_path_new"' sh
 done
 
 INSTALLER_DIR="/dev/null"
@@ -106,18 +122,22 @@ fi
 if [ ! -z "$APP_NAME" ]; then
 	if [ -d "$INSTALLER_DIR" ]; then
 		while true; do
-		    read -rp "Remove old $INSTALLER_DIR directory? y/n " yn
+		    read -r "yn?Remove old $INSTALLER_DIR directory? y/n "
 		    case $yn in
-			[Yy]* ) sudo rm -rf "$INSTALLER_DIR"; break;;
+			[Yy]* ) rm -rf "$INSTALLER_DIR"; break;;
 			[Nn]* ) exit;;
 			* ) echo "Please answer yes or no.";;
 		    esac
 		done
 	fi
 
-	sudo mkdir "$INSTALLER_DIR"
-	sudo cp -r "$TARGET_DIR" "$INSTALLER_DIR"
-	sudo ln -s /Applications "$INSTALLER_DIR/Applications"
+	#echo 'TODO: how do we sign this? Do we sign both the DMG and the XYZ.app?'
+	#echo 'Until the signing is done, it'll be necessary to right-click open.
+	codesign --force --deep --sign - "$TARGET_DIR"
+
+	mkdir "$INSTALLER_DIR"
+	cp -R "$TARGET_DIR" "$INSTALLER_DIR"
+	ln -s "$PWD/Applications" "$INSTALLER_DIR/Applications"
 
 	echo ""
 	echo "$PROGRAM_NAME executable bundle: $TARGET_DIR"
@@ -127,10 +147,10 @@ if [ ! -z "$APP_NAME" ]; then
 	# TODO: look at using a DMG builder like this:
 	# https://github.com/andreyvit/create-dmg
 	# But note that project is looking for new maintainers.
-
-	echo 'TODO: how do we sign this? Do we sign both the DMG and the XYZ.app?'
-	echo 'Until the signing is done, it'll be necessary to right-click open.
 else
+	codesign --force --deep --sign - "$TARGET_DIR"/*
+	codesign --force --deep --sign - "$TARGET_DIR"/.ns/**/*.dylib
+
 	tar -czvf "$INSTALLER_DIR" "$TARGET_DIR"	
 	echo ""
 	echo "$PROGRAM_NAME executable bundle: $TARGET_DIR"

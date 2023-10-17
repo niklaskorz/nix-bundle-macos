@@ -7,11 +7,11 @@ First, [install Nix](https://nixos.org/nix/download.html) on your Mac. Then inst
 ## Create a self-contained `.app`
 
 ```
-./nix-bundle-macos PathVisio
+./nix-bundle-macos nixpkgs#audacity
 ```
 
 ## Create a self-contained `bin` executable
 
 ```
-./nix-bundle-macos ripgrep-0.9.0
+./nix-bundle-macos nixpkgs#ripgrep
 ```

@@ -131,6 +131,7 @@ if [ ! -z "$APP_NAME" ]; then
 		done
 	fi
 
+	# sign the app bundle
 	codesign --force --deep --sign - "$TARGET_DIR"
 	# sign dylibs if there are any
 	if compgen -G "$NIX_STORE_TARGET/**/*.dylib" > /dev/null; then
@@ -150,7 +151,8 @@ if [ ! -z "$APP_NAME" ]; then
 	# https://github.com/andreyvit/create-dmg
 	# But note that project is looking for new maintainers.
 else
-	codesign --force --deep --sign - "$TARGET_DIR"/*
+	# sign all executable files
+	codesign --force --deep --sign - $(find "$TARGET_DIR" -type f -perm -a=x)
 	# sign dylibs if there are any
 	if compgen -G "$NIX_STORE_TARGET/**/*.dylib" > /dev/null; then
 		codesign --force --deep --sign - "$NIX_STORE_TARGET"/**/*.dylib
